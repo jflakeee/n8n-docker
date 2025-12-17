@@ -7,6 +7,7 @@ Docker Compose를 사용한 n8n 워크플로우 자동화 플랫폼 설정.
 - **Traefik**: 리버스 프록시 + HTTPS (v3.2)
 - **n8n**: 워크플로우 자동화 플랫폼
 - **PostgreSQL**: 데이터베이스 (v16 Alpine)
+- **Redis**: 캐시 및 큐 관리 (v7 Alpine)
 
 ## 주요 기능
 
@@ -14,6 +15,7 @@ Docker Compose를 사용한 n8n 워크플로우 자동화 플랫폼 설정.
 - HTTP → HTTPS 자동 리다이렉트
 - Traefik 대시보드 (Basic Auth 보호)
 - PostgreSQL 데이터 영구 저장
+- Redis 기반 큐 모드 및 캐싱
 
 ## 빠른 시작
 
@@ -29,6 +31,7 @@ N8N_DOMAIN=n8n.yourdomain.com
 TRAEFIK_DOMAIN=traefik.yourdomain.com
 ACME_EMAIL=your-email@example.com
 POSTGRES_PASSWORD=your_secure_password_here
+REDIS_PASSWORD=your_redis_password_here
 ```
 
 ### 2. Traefik 인증 설정
@@ -67,6 +70,7 @@ docker compose up -d
 | `docker compose logs -f` | 전체 로그 확인 |
 | `docker compose logs -f n8n` | n8n 로그 확인 |
 | `docker compose logs -f traefik` | Traefik 로그 확인 |
+| `docker compose logs -f redis` | Redis 로그 확인 |
 | `docker compose ps` | 상태 확인 |
 | `docker compose restart` | 재시작 |
 
@@ -83,6 +87,60 @@ docker compose up -d
 | `POSTGRES_DB` | n8n | DB 이름 |
 | `POSTGRES_USER` | n8n | DB 사용자 |
 | `POSTGRES_PASSWORD` | - | DB 비밀번호 |
+| `REDIS_PASSWORD` | - | Redis 비밀번호 |
+
+## Redis 설정
+
+### 큐 모드
+
+n8n은 Redis를 사용하여 워크플로우 실행을 큐로 관리합니다.
+
+**장점**:
+- 워크플로우 실행의 안정성 향상
+- 서버 재시작 시에도 실행 상태 유지
+- 대규모 워크플로우 처리에 적합
+
+**관련 환경변수**:
+```env
+EXECUTIONS_MODE=queue
+QUEUE_BULL_REDIS_HOST=redis
+QUEUE_BULL_REDIS_PORT=6379
+QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+```
+
+### 캐싱
+
+Redis 캐시를 통해 n8n 성능을 향상시킵니다.
+
+**장점**:
+- API 응답 속도 향상
+- 데이터베이스 부하 감소
+- 반복 조회 최적화
+
+**관련 환경변수**:
+```env
+N8N_CACHE_ENABLED=true
+N8N_CACHE_BACKEND=redis
+N8N_CACHE_REDIS_HOST=redis
+N8N_CACHE_REDIS_PORT=6379
+N8N_CACHE_REDIS_PASSWORD=${REDIS_PASSWORD}
+```
+
+### Redis 모니터링
+
+```bash
+# Redis 연결 테스트
+docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
+
+# Redis 정보 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD info
+
+# 캐시 키 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD keys '*'
+
+# 메모리 사용량 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD info memory
+```
 
 ## HTTPS 설정
 
@@ -116,6 +174,15 @@ docker compose exec postgres pg_dump -U n8n n8n > backup.sql
 ### PostgreSQL 복원
 ```bash
 docker compose exec -T postgres psql -U n8n n8n < backup.sql
+```
+
+### Redis 백업
+```bash
+# RDB 스냅샷 강제 생성
+docker compose exec redis redis-cli -a $REDIS_PASSWORD bgsave
+
+# RDB 파일 복사
+docker compose cp redis:/data/dump.rdb ./redis-backup.rdb
 ```
 
 ### 인증서 백업
@@ -154,11 +221,14 @@ docker compose cp traefik:/etc/traefik/acme.json ./acme.json
 │Dashboard│  │    :5678    │
 └────────┘  └──────┬──────┘
                    │
-                   ▼
-            ┌─────────────┐
-            │  PostgreSQL │
-            │    :5432    │
-            └─────────────┘
+         ┌─────────┼─────────┐
+         │         │         │
+         ▼         ▼         ▼
+   ┌──────────┐ ┌──────────┐
+   │PostgreSQL│ │  Redis   │
+   │  :5432   │ │  :6379   │
+   └──────────┘ └──────────┘
+      (DB)      (Cache/Queue)
 ```
 
 ## 문제 해결
@@ -185,9 +255,19 @@ docker compose logs n8n
 docker compose exec postgres pg_isready -U n8n -d n8n
 ```
 
+### Redis 연결 실패
+```bash
+# Redis 상태 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
+
+# Redis 로그 확인
+docker compose logs redis
+```
+
 ## 참고
 
 - [n8n 공식 문서](https://docs.n8n.io/)
+- [n8n Queue Mode](https://docs.n8n.io/hosting/scaling/queue-mode/)
 - [Traefik 공식 문서](https://doc.traefik.io/traefik/)
 - [Let's Encrypt](https://letsencrypt.org/)
-- [n8n Docker 가이드](https://docs.n8n.io/hosting/installation/docker/)
+- [Redis 공식 문서](https://redis.io/docs/)
