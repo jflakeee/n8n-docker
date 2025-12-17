@@ -1,0 +1,22 @@
+# 환경변수 (민감정보)
+.env
+.env.*
+!.env.example
+
+# Docker 볼륨 데이터
+data/
+postgres_data/
+n8n_data/
+
+# 로그
+*.log
+logs/
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
