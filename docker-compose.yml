@@ -77,6 +77,43 @@ services:
       redis:
         condition: service_healthy
 
+  n8n-worker:
+    image: docker.n8n.io/n8nio/n8n
+    restart: unless-stopped
+    command: worker
+    environment:
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - TZ=${TZ}
+      # PostgreSQL 연결 설정
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      # Redis 큐 설정
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
+      # Redis 캐시 설정
+      - N8N_CACHE_ENABLED=true
+      - N8N_CACHE_BACKEND=redis
+      - N8N_CACHE_REDIS_HOST=redis
+      - N8N_CACHE_REDIS_PORT=6379
+      - N8N_CACHE_REDIS_PASSWORD=${REDIS_PASSWORD}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n:
+        condition: service_started
+    deploy:
+      replicas: ${N8N_WORKER_REPLICAS:-2}
+
   postgres:
     image: postgres:16-alpine
     container_name: n8n-postgres
