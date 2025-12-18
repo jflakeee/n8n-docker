@@ -5,7 +5,8 @@ Docker Compose를 사용한 n8n 워크플로우 자동화 플랫폼 설정.
 ## 구성 요소
 
 - **Traefik**: 리버스 프록시 + HTTPS (v3.2)
-- **n8n**: 워크플로우 자동화 플랫폼
+- **n8n**: 워크플로우 자동화 플랫폼 (메인)
+- **n8n Worker**: 워크플로우 실행 워커 (스케일 가능)
 - **PostgreSQL**: 데이터베이스 (v16 Alpine)
 - **Redis**: 캐시 및 큐 관리 (v7 Alpine)
 
@@ -16,6 +17,7 @@ Docker Compose를 사용한 n8n 워크플로우 자동화 플랫폼 설정.
 - Traefik 대시보드 (Basic Auth 보호)
 - PostgreSQL 데이터 영구 저장
 - Redis 기반 큐 모드 및 캐싱
+- Worker 수평 확장 (Horizontal Scaling)
 
 ## 빠른 시작
 
@@ -32,6 +34,7 @@ TRAEFIK_DOMAIN=traefik.yourdomain.com
 ACME_EMAIL=your-email@example.com
 POSTGRES_PASSWORD=your_secure_password_here
 REDIS_PASSWORD=your_redis_password_here
+N8N_WORKER_REPLICAS=2
 ```
 
 ### 2. Traefik 인증 설정
@@ -69,6 +72,7 @@ docker compose up -d
 | `docker compose down` | 중지 |
 | `docker compose logs -f` | 전체 로그 확인 |
 | `docker compose logs -f n8n` | n8n 로그 확인 |
+| `docker compose logs -f n8n-worker` | Worker 로그 확인 |
 | `docker compose logs -f traefik` | Traefik 로그 확인 |
 | `docker compose logs -f redis` | Redis 로그 확인 |
 | `docker compose ps` | 상태 확인 |
@@ -88,6 +92,58 @@ docker compose up -d
 | `POSTGRES_USER` | n8n | DB 사용자 |
 | `POSTGRES_PASSWORD` | - | DB 비밀번호 |
 | `REDIS_PASSWORD` | - | Redis 비밀번호 |
+| `N8N_WORKER_REPLICAS` | 2 | Worker 인스턴스 수 |
+
+## Worker 설정
+
+### 개요
+
+n8n Worker는 Redis 큐에서 워크플로우 실행 작업을 가져와 처리합니다. 메인 n8n 인스턴스는 UI와 Webhook을 담당하고, Worker가 실제 워크플로우를 실행합니다.
+
+**장점**:
+- 워크플로우 실행 부하 분산
+- 수평 확장으로 처리량 증가
+- 메인 인스턴스 안정성 향상
+- 무중단 Worker 스케일링
+
+### 스케일링
+
+```bash
+# .env 파일에서 Worker 수 변경
+N8N_WORKER_REPLICAS=4
+
+# 변경 적용
+docker compose up -d
+
+# 또는 명령어로 직접 스케일링
+docker compose up -d --scale n8n-worker=4
+```
+
+### Worker 모니터링
+
+```bash
+# Worker 상태 확인
+docker compose ps n8n-worker
+
+# 모든 Worker 로그 확인
+docker compose logs -f n8n-worker
+
+# 특정 Worker 로그 확인
+docker logs n8n-n8n-worker-1 -f
+
+# Worker 리소스 사용량
+docker stats $(docker compose ps -q n8n-worker)
+```
+
+### 권장 Worker 수
+
+| 워크플로우 규모 | 권장 Worker 수 |
+|----------------|----------------|
+| 소규모 (일 100건 미만) | 1-2 |
+| 중규모 (일 1,000건) | 2-4 |
+| 대규모 (일 10,000건+) | 4-8+ |
+
+> Worker 수는 서버 CPU 코어 수와 메모리를 고려하여 설정하세요.
 
 ## Redis 설정
 
@@ -135,8 +191,8 @@ docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 # Redis 정보 확인
 docker compose exec redis redis-cli -a $REDIS_PASSWORD info
 
-# 캐시 키 확인
-docker compose exec redis redis-cli -a $REDIS_PASSWORD keys '*'
+# 큐 상태 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD keys 'bull:*'
 
 # 메모리 사용량 확인
 docker compose exec redis redis-cli -a $REDIS_PASSWORD info memory
@@ -204,31 +260,43 @@ docker compose cp traefik:/etc/traefik/acme.json ./acme.json
 ## 아키텍처
 
 ```
-        인터넷
-           │
-           ▼
-    ┌─────────────┐
-    │   Traefik   │ ← Let's Encrypt HTTPS
-    │  :80 / :443 │
-    └──────┬──────┘
-           │ HTTP → HTTPS 리다이렉트
-           │
-    ┌──────┴──────┐
-    │             │
-    ▼             ▼
-┌────────┐  ┌─────────────┐
-│Traefik │  │     n8n     │
-│Dashboard│  │    :5678    │
-└────────┘  └──────┬──────┘
-                   │
-         ┌─────────┼─────────┐
-         │         │         │
-         ▼         ▼         ▼
-   ┌──────────┐ ┌──────────┐
-   │PostgreSQL│ │  Redis   │
-   │  :5432   │ │  :6379   │
-   └──────────┘ └──────────┘
-      (DB)      (Cache/Queue)
+            인터넷
+               │
+               ▼
+        ┌─────────────┐
+        │   Traefik   │ ← Let's Encrypt HTTPS
+        │  :80 / :443 │
+        └──────┬──────┘
+               │
+        ┌──────┴──────┐
+        │             │
+        ▼             ▼
+   ┌────────┐   ┌───────────┐
+   │Traefik │   │    n8n    │ ← UI / Webhooks
+   │Dashboard│   │   :5678   │
+   └────────┘   └─────┬─────┘
+                      │
+                      ▼
+               ┌─────────────┐
+               │    Redis    │ ← Job Queue
+               │    :6379    │
+               └──────┬──────┘
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+        ▼             ▼             ▼
+   ┌─────────┐  ┌─────────┐  ┌─────────┐
+   │ Worker  │  │ Worker  │  │ Worker  │
+   │   #1    │  │   #2    │  │   #N    │
+   └────┬────┘  └────┬────┘  └────┬────┘
+        │             │             │
+        └─────────────┼─────────────┘
+                      │
+                      ▼
+               ┌─────────────┐
+               │ PostgreSQL  │ ← Data Storage
+               │    :5432    │
+               └─────────────┘
 ```
 
 ## 문제 해결
@@ -264,10 +332,35 @@ docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 docker compose logs redis
 ```
 
+### Worker 문제
+```bash
+# Worker 상태 확인
+docker compose ps n8n-worker
+
+# Worker 로그 확인
+docker compose logs n8n-worker
+
+# Worker 재시작
+docker compose restart n8n-worker
+
+# 특정 Worker만 재시작
+docker restart n8n-n8n-worker-1
+```
+
+### 큐 적체 (Queue Backlog)
+```bash
+# 큐 대기 작업 수 확인
+docker compose exec redis redis-cli -a $REDIS_PASSWORD llen bull:jobs:wait
+
+# Worker 스케일 업
+docker compose up -d --scale n8n-worker=4
+```
+
 ## 참고
 
 - [n8n 공식 문서](https://docs.n8n.io/)
 - [n8n Queue Mode](https://docs.n8n.io/hosting/scaling/queue-mode/)
+- [n8n Scaling Guide](https://docs.n8n.io/hosting/scaling/)
 - [Traefik 공식 문서](https://doc.traefik.io/traefik/)
 - [Let's Encrypt](https://letsencrypt.org/)
 - [Redis 공식 문서](https://redis.io/docs/)
